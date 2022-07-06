@@ -6,6 +6,7 @@
     <a class="btn btn-info d-flex align-items-center float-right mb-4" href="{{ route('admin.posts.create') }}">Crea un Post</a>
     <table class="table">
         <thead>
+          
           <tr>
             <th scope="col">ID</th>
             <th scope="col">Titolo</th>
@@ -20,6 +21,16 @@
                     <td>{{ $post->title }}</td>
                     <td>
                       <a class="btn btn-success" href="{{ route('admin.posts.show', $post) }}">SHOW</a>
+                      <a class="btn btn-info" href="{{ route('admin.posts.edit', $post) }}">EDIT</a>
+
+                      <form action="{{ route('admin.posts.destroy', $post) }}" method="POST"
+                      class="d-inline"
+                      onsubmit="return confirm('confermi l\'eliminazione di: {{ $post->title }} ?')">
+                      @method('DELETE')
+                      @csrf
+                        <button type="submit" class="btn btn-danger">DELETE</button>
+                      </form>
+                      
                     </td>
                 </tr>                
             @endforeach
