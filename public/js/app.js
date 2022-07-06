@@ -37647,7 +37647,7 @@ function normalizeComponent(
 
 "use strict";
 /* WEBPACK VAR INJECTION */(function(global, setImmediate) {/*!
- * Vue.js v2.7.2
+ * Vue.js v2.7.3
  * (c) 2014-2022 Evan You
  * Released under the MIT License.
  */
@@ -37984,7 +37984,9 @@ const LIFECYCLE_HOOKS = [
     'activated',
     'deactivated',
     'errorCaptured',
-    'serverPrefetch'
+    'serverPrefetch',
+    'renderTracked',
+    'renderTriggered'
 ];
 
 var config = {
@@ -38492,7 +38494,7 @@ function makeReactive(target, shallow) {
                 warn$2(`Target is already a ${existingOb.shallow ? `` : `non-`}shallow reactive object, and cannot be converted to ${shallow ? `` : `non-`}shallow.`);
             }
         }
-        const ob = observe(target, shallow);
+        const ob = observe(target, shallow, isServerRendering() /* ssr mock reactivity */);
         if (!ob) {
             if (target == null || isPrimitive(target)) {
                 warn$2(`value cannot be made reactive: ${String(target)}`);
@@ -38554,7 +38556,7 @@ function createRef(rawValue, shallow) {
     const ref = {};
     def(ref, RefFlag, true);
     def(ref, "__v_isShallow" /* ReactiveFlags.IS_SHALLOW */, true);
-    ref.dep = defineReactive(ref, 'value', rawValue, null, shallow);
+    def(ref, 'dep', defineReactive(ref, 'value', rawValue, null, shallow, isServerRendering()));
     return ref;
 }
 function triggerRef(ref) {
@@ -42251,7 +42253,7 @@ const onServerPrefetch = createLifeCycle('serverPrefetch');
 const onRenderTracked = createLifeCycle('renderTracked');
 const onRenderTriggered = createLifeCycle('renderTriggered');
 
-const version = '2.7.2';
+const version = '2.7.3';
 /**
  * @internal type is manually declared in <root>/types/v3-define-component.d.ts
  */
@@ -42327,6 +42329,13 @@ let shouldObserve = true;
 function toggleObserving(value) {
     shouldObserve = value;
 }
+// ssr mock dep
+const mockDep = {
+    notify: noop,
+    depend: noop,
+    addSub: noop,
+    removeSub: noop
+};
 /**
  * Observer class that is attached to each observed
  * object. Once attached, the observer converts the target
@@ -42334,76 +42343,60 @@ function toggleObserving(value) {
  * collect dependencies and dispatch updates.
  */
 class Observer {
-    constructor(value, shallow = false) {
+    constructor(value, shallow = false, mock = false) {
         this.value = value;
         this.shallow = shallow;
+        this.mock = mock;
         // this.value = value
-        this.dep = new Dep();
+        this.dep = mock ? mockDep : new Dep();
         this.vmCount = 0;
         def(value, '__ob__', this);
         if (isArray(value)) {
-            if (hasProto) {
-                protoAugment(value, arrayMethods);
-            }
-            else {
-                copyAugment(value, arrayMethods, arrayKeys);
+            if (!mock) {
+                if (hasProto) {
+                    value.__proto__ = arrayMethods;
+                    /* eslint-enable no-proto */
+                }
+                else {
+                    for (let i = 0, l = arrayKeys.length; i < l; i++) {
+                        const key = arrayKeys[i];
+                        def(value, key, arrayMethods[key]);
+                    }
+                }
             }
             if (!shallow) {
                 this.observeArray(value);
             }
         }
         else {
-            this.walk(value, shallow);
-        }
-    }
-    /**
-     * Walk through all properties and convert them into
-     * getter/setters. This method should only be called when
-     * value type is Object.
-     */
-    walk(obj, shallow) {
-        const keys = Object.keys(obj);
-        for (let i = 0; i < keys.length; i++) {
-            const key = keys[i];
-            defineReactive(obj, key, NO_INIITIAL_VALUE, undefined, shallow);
+            /**
+             * Walk through all properties and convert them into
+             * getter/setters. This method should only be called when
+             * value type is Object.
+             */
+            const keys = Object.keys(value);
+            for (let i = 0; i < keys.length; i++) {
+                const key = keys[i];
+                defineReactive(value, key, NO_INIITIAL_VALUE, undefined, shallow, mock);
+            }
         }
     }
     /**
      * Observe a list of Array items.
      */
-    observeArray(items) {
-        for (let i = 0, l = items.length; i < l; i++) {
-            observe(items[i]);
+    observeArray(value) {
+        for (let i = 0, l = value.length; i < l; i++) {
+            observe(value[i], false, this.mock);
         }
     }
 }
 // helpers
 /**
- * Augment a target Object or Array by intercepting
- * the prototype chain using __proto__
- */
-function protoAugment(target, src) {
-    /* eslint-disable no-proto */
-    target.__proto__ = src;
-    /* eslint-enable no-proto */
-}
-/**
- * Augment a target Object or Array by defining
- * hidden properties.
- */
-/* istanbul ignore next */
-function copyAugment(target, src, keys) {
-    for (let i = 0, l = keys.length; i < l; i++) {
-        const key = keys[i];
-        def(target, key, src[key]);
-    }
-}
-/**
  * Attempt to create an observer instance for a value,
  * returns the new observer if successfully observed,
  * or the existing observer if the value already has one.
  */
-function observe(value, shallow) {
+function observe(value, shallow, ssrMockReactivity) {
     if (!isObject(value) || isRef(value) || value instanceof VNode) {
         return;
     }
@@ -42412,18 +42405,18 @@ function observe(value, shallow) {
         ob = value.__ob__;
     }
     else if (shouldObserve &&
-        !isServerRendering() &&
+        (ssrMockReactivity || !isServerRendering()) &&
         (isArray(value) || isPlainObject(value)) &&
         Object.isExtensible(value) &&
-        !value.__v_skip) {
-        ob = new Observer(value, shallow);
+        !value.__v_skip /* ReactiveFlags.SKIP */) {
+        ob = new Observer(value, shallow, ssrMockReactivity);
     }
     return ob;
 }
 /**
  * Define a reactive property on an Object.
  */
-function defineReactive(obj, key, val, customSetter, shallow) {
+function defineReactive(obj, key, val, customSetter, shallow, mock) {
     const dep = new Dep();
     const property = Object.getOwnPropertyDescriptor(obj, key);
     if (property && property.configurable === false) {
@@ -42436,7 +42429,7 @@ function defineReactive(obj, key, val, customSetter, shallow) {
         (val === NO_INIITIAL_VALUE || arguments.length === 2)) {
         val = obj[key];
     }
-    let childOb = !shallow && observe(val);
+    let childOb = !shallow && observe(val, false, mock);
     Object.defineProperty(obj, key, {
         enumerable: true,
         configurable: true,
@@ -42481,7 +42474,7 @@ function defineReactive(obj, key, val, customSetter, shallow) {
             else {
                 val = newVal;
             }
-            childOb = !shallow && observe(newVal);
+            childOb = !shallow && observe(newVal, false, mock);
             {
                 dep.notify({
                     type: "set" /* TriggerOpTypes.SET */,
@@ -42503,16 +42496,20 @@ function set(target, key, val) {
         warn$2(`Set operation on key "${key}" failed: target is readonly.`);
         return;
     }
+    const ob = target.__ob__;
     if (isArray(target) && isValidArrayIndex(key)) {
         target.length = Math.max(target.length, key);
         target.splice(key, 1, val);
+        // when mocking for SSR, array methods are not hijacked
+        if (!ob.shallow && ob.mock) {
+            observe(val, false, true);
+        }
         return val;
     }
     if (key in target && !(key in Object.prototype)) {
         target[key] = val;
         return val;
     }
-    const ob = target.__ob__;
     if (target._isVue || (ob && ob.vmCount)) {
         warn$2('Avoid adding reactive properties to a Vue instance or its root $data ' +
                 'at runtime - declare it upfront in the data option.');
@@ -42522,7 +42519,7 @@ function set(target, key, val) {
         target[key] = val;
         return val;
     }
-    defineReactive(ob.value, key, val);
+    defineReactive(ob.value, key, val, undefined, ob.shallow, ob.mock);
     {
         ob.dep.notify({
             type: "add" /* TriggerOpTypes.ADD */,
@@ -49490,8 +49487,8 @@ __webpack_require__.r(__webpack_exports__);
 /*! no static exports found */
 /***/ (function(module, exports, __webpack_require__) {
 
-__webpack_require__(/*! C:\Users\emanu\OneDrive\Desktop\BOOLEAN\LARAVEL\laravel-auth\resources\js\app.js */"./resources/js/app.js");
-module.exports = __webpack_require__(/*! C:\Users\emanu\OneDrive\Desktop\BOOLEAN\LARAVEL\laravel-auth\resources\sass\app.scss */"./resources/sass/app.scss");
+__webpack_require__(/*! C:\Users\emanu\OneDrive\Desktop\BOOLEAN\LARAVEL\laravel-auth-ripasso\resources\js\app.js */"./resources/js/app.js");
+module.exports = __webpack_require__(/*! C:\Users\emanu\OneDrive\Desktop\BOOLEAN\LARAVEL\laravel-auth-ripasso\resources\sass\app.scss */"./resources/sass/app.scss");
 
 
 /***/ })
